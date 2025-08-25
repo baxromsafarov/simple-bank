@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   postgres:
     image: postgres:14-alpine
@@ -11,6 +10,27 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck: # <-- ADD THIS HEALTHCHECK
+      test: ["CMD-SHELL", "pg_isready -U root -d simple_bank"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simple_bank_api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./app.env:/app/app.env
+    environment: # <-- CHANGE env_file TO environment
+      DB_SOURCE: "postgresql://root:secret@postgres:5432/simple_bank?sslmode=disable"
+      SERVER_ADDRESS: 0.0.0.0:8080
+    depends_on:
+      postgres: # <-- ADD NEW DEPENDS_ON SYNTAX
+        condition: service_healthy
 
 volumes:
   postgres_data:

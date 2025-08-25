@@ -3,28 +3,32 @@ package db
 import (
 	"context"
 	"fmt"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/jackc/pgx/v5/pgxpool" // <-- Убедись, что этот импорт есть
 )
 
 // Store предоставляет все функции для выполнения запросов к БД и транзакций.
 type Store struct {
 	*Queries
-	conn *pgx.Conn
+	db *pgxpool.Pool // <-- Храним пул соединений
 }
 
 // NewStore создает новый объект Store.
-func NewStore(conn *pgx.Conn) *Store {
+func NewStore(db *pgxpool.Pool) *Store { // <-- Принимаем пул соединений
 	return &Store{
-		conn:    conn,
-		Queries: New(conn),
+		db:      db,
+		Queries: New(db),
 	}
 }
 
+// execTx выполняет функцию в рамках транзакции базы данных.
 func (store *Store) execTx(ctx context.Context, fn func(*Queries) error) error {
-	tx, err := store.conn.BeginTx(ctx, pgx.TxOptions{})
+	// Начинаем транзакцию из пула
+	tx, err := store.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
+
 	q := New(tx)
 	err = fn(q)
 	if err != nil {
@@ -33,6 +37,7 @@ func (store *Store) execTx(ctx context.Context, fn func(*Queries) error) error {
 		}
 		return err
 	}
+
 	return tx.Commit(ctx)
 }
 
@@ -52,12 +57,13 @@ type TransferTxResult struct {
 	ToEntry     Entry    `json:"to_entry"`
 }
 
+// TransferTx выполняет денежный перевод с одного счета на другой.
 func (store *Store) TransferTx(ctx context.Context, arg TransferTxParams) (TransferTxResult, error) {
 	var result TransferTxResult
+
 	err := store.execTx(ctx, func(q *Queries) error {
 		var err error
 
-		// Шаг 1: Создаем запись о переводе (transfer)
 		result.Transfer, err = q.CreateTransfer(ctx, CreateTransferParams{
 			FromAccountID: arg.FromAccountID,
 			ToAccountID:   arg.ToAccountID,
@@ -67,26 +73,23 @@ func (store *Store) TransferTx(ctx context.Context, arg TransferTxParams) (Trans
 			return err
 		}
 
-		// Шаг 2: Создаем запись о движении средств (entry) для отправителя
 		result.FromEntry, err = q.CreateEntry(ctx, CreateEntryParams{
 			AccountID: arg.FromAccountID,
-			Amount:    -arg.Amount, // Сумма отрицательная, так как это списание
+			Amount:    -arg.Amount,
 		})
 		if err != nil {
 			return err
 		}
 
-		// Шаг 3: Создаем entry для получателя
 		result.ToEntry, err = q.CreateEntry(ctx, CreateEntryParams{
 			AccountID: arg.ToAccountID,
-			Amount:    arg.Amount, // Сумма положительная
+			Amount:    arg.Amount,
 		})
 		if err != nil {
 			return err
 		}
 
-		// Шаг 4: Обновляем балансы счетов
-		// Чтобы избежать deadlock, обновляем счета в порядке их ID
+		// ВОЗВРАЩАЕМ АТОМАРНОЕ ОБНОВЛЕНИЕ БАЛАНСА
 		if arg.FromAccountID < arg.ToAccountID {
 			result.FromAccount, err = q.AddAccountBalance(ctx, AddAccountBalanceParams{
 				ID:      arg.FromAccountID,
@@ -120,7 +123,7 @@ func (store *Store) TransferTx(ctx context.Context, arg TransferTxParams) (Trans
 		}
 
 		return nil
-
 	})
+
 	return result, err
 }

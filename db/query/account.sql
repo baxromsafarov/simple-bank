@@ -6,6 +6,7 @@ VALUES ($1, $2, $3) RETURNING *;
 SELECT *
 FROM accounts
 WHERE id = $1 LIMIT 1;
+FOR UPDATE;
 
 -- name: ListAccounts :many
 SELECT *
